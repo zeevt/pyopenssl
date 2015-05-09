@@ -27,6 +27,8 @@ FILETYPE_TEXT = 2 ** 16 - 1
 
 TYPE_RSA = _lib.EVP_PKEY_RSA
 TYPE_DSA = _lib.EVP_PKEY_DSA
+TYPE_DH  = _lib.EVP_PKEY_DH
+TYPE_EC  = _lib.EVP_PKEY_EC
 
 
 
@@ -161,11 +163,60 @@ def _get_asn1_time(timestamp):
 class PKey(object):
     _only_public = False
     _initialized = True
+    _key_types_to_names = {
+        TYPE_RSA: 'RSA',
+        TYPE_DSA: 'DSA',
+        TYPE_DH: 'DH',
+        TYPE_EC: 'EC',
+    }
 
     def __init__(self):
         pkey = _lib.EVP_PKEY_new()
         self._pkey = _ffi.gc(pkey, _lib.EVP_PKEY_free)
         self._initialized = False
+
+
+    def __str__(self):
+        retval = "%s key, %d bits" % (self._key_types_to_names[self.type()], self.bits())
+        if self.type() == TYPE_EC:
+            curve = self.curve()
+            curve_name = curve.name
+            retval += ", %s" % curve_name
+            curve_nist_name = curve.get_NIST_name()
+            if curve_nist_name:
+                retval += " (%s)" % curve_nist_name
+        retval += ", %d bits security" % self.get_security_bits_equivalent()
+        return retval
+
+
+    def get_security_bits_equivalent(self):
+        """
+        Get the amount of "bits of security" the key gives, as used in NIST Special Publication 800-57.
+
+        :return: an integer which can be used to compare the strength of keys of different types.
+        """
+        key_bits = self.bits()
+        if self.type() == TYPE_EC:
+            return key_bits // 2
+        elif self.type() in (TYPE_RSA, TYPE_DSA, TYPE_DH):
+            if key_bits >= 15360:
+                return 256
+            elif key_bits >= 7680:
+                return 192
+            elif key_bits >= 3072:
+                return 128
+            elif key_bits >= 2048:
+                return 112
+            elif key_bits >= 1536:
+                return 96
+            elif key_bits >= 1024:
+                return 80
+            elif key_bits >= 768:
+                return 64
+            else:
+                return 1
+        else:
+            raise Error("Unsupported key type")
 
 
     def generate_key(self, type, bits):
@@ -267,6 +318,16 @@ class PKey(object):
         :return: The number of bits of the key.
         """
         return _lib.EVP_PKEY_bits(self._pkey)
+
+    def curve(self):
+        if self.type() != TYPE_EC:
+            raise TypeError("EC keys only")
+        ec = _lib.EVP_PKEY_get1_EC_KEY(self._pkey)
+        ec = _ffi.gc(ec, _lib.EC_KEY_free)
+        group = _lib.EC_KEY_get0_group(ec)
+        nid = _lib.EC_GROUP_get_curve_name(group)
+        curve = _EllipticCurve.from_nid(_lib, nid)
+        return curve
 PKeyType = PKey
 
 
@@ -372,6 +433,16 @@ class _EllipticCurve(object):
 
     def __repr__(self):
         return "<Curve %r>" % (self.name,)
+
+
+    def get_NIST_name(self):
+        if not hasattr(self._lib, 'EC_curve_nid2nist'):
+            return None
+        cname = self._lib.EC_curve_nid2nist(self._nid)
+        if cname == _ffi.NULL:
+            return None
+        curve_name = _ffi.string(cname).decode("ascii")
+        return curve_name
 
 
     def _to_EC_KEY(self):
