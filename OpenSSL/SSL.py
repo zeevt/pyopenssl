@@ -1882,6 +1882,45 @@ class Connection(object):
             version =_ffi.string(_lib.SSL_CIPHER_get_version(cipher))
             return version.decode("utf-8")
 
+    def get_pfs_details(self):
+        """
+        Obtain details about the ephemeral key exchange used.
+
+        :returns: The type of key exchange, size of ephemeral key
+            in bits and curve name or :py:obj:`None` is no ephemeral
+            key exchange was used.
+        :rtype: :py:class:`tuple` or :py:class:`NoneType`
+        """
+        # print _lib.Cryptography_HAS_GET_SERVER_TMP_KEY
+        if not hasattr(_lib, 'SSL_get_server_tmp_key'):
+            return None
+        p_evp_pkey = _ffi.new('EVP_PKEY *[1]')
+        err = _lib.SSL_get_server_tmp_key(self._ssl, p_evp_pkey)
+        if err == 0:
+            return None
+        try:
+            retval = None
+            key = p_evp_pkey[0]
+            keyid = _lib.EVP_PKEY_id(key)
+            if keyid == _lib.EVP_PKEY_RSA:
+                retval = ('RSA', _lib.EVP_PKEY_bits(key), None)
+            elif keyid == _lib.EVP_PKEY_DH:
+                retval = ('DH', _lib.EVP_PKEY_bits(key), None)
+            elif keyid == _lib.EVP_PKEY_EC:
+                ec = _lib.EVP_PKEY_get1_EC_KEY(key)
+                group = _lib.EC_KEY_get0_group(ec)
+                nid = _lib.EC_GROUP_get_curve_name(group)
+                _lib.EC_KEY_free(ec)
+                cname = _lib.EC_curve_nid2nist(nid)
+                if cname == _ffi.NULL:
+                    cname = _lib.OBJ_nid2sn(nid)
+                curve_name = _ffi.string(cname)
+                retval = ('ECDH', _lib.EVP_PKEY_bits(key), curve_name)
+            else:
+                retval = None
+        finally:
+            _lib.EVP_PKEY_free(key)
+        return retval
 
     @_requires_npn
     def get_next_proto_negotiated(self):
